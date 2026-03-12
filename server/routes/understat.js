@@ -14,6 +14,35 @@ const LEAGUE_SLUGS = {
   ligue1: 'Ligue_1',
 };
 
+// Rotate user agents to reduce chance of being blocked
+const USER_AGENTS = [
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:123.0) Gecko/20100101 Firefox/123.0',
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:123.0) Gecko/20100101 Firefox/123.0',
+];
+
+function getRandomUA() {
+  return USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
+}
+
+function getHeaders() {
+  return {
+    'User-Agent': getRandomUA(),
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+    'Accept-Language': 'en-US,en;q=0.9',
+    'Accept-Encoding': 'gzip, deflate, br',
+    'Connection': 'keep-alive',
+    'Upgrade-Insecure-Requests': '1',
+    'Sec-Fetch-Dest': 'document',
+    'Sec-Fetch-Mode': 'navigate',
+    'Sec-Fetch-Site': 'none',
+    'Sec-Fetch-User': '?1',
+    'Cache-Control': 'max-age=0',
+  };
+}
+
 // Season is typically the start year (e.g., 2025 for 2025/26)
 function getCurrentSeason() {
   const now = new Date();
@@ -21,8 +50,31 @@ function getCurrentSeason() {
 }
 
 /**
+ * Fetch with retry logic
+ */
+async function fetchWithRetry(url, maxRetries = 2) {
+  let lastError;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const { data } = await axios.get(url, {
+        headers: getHeaders(),
+        timeout: 15000,
+        maxRedirects: 5,
+      });
+      return data;
+    } catch (err) {
+      lastError = err;
+      console.warn(`[Understat] Attempt ${attempt + 1} failed for ${url}: ${err.message}`);
+      if (attempt < maxRetries) {
+        await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
+      }
+    }
+  }
+  throw lastError;
+}
+
+/**
  * Scrapes Understat match page for xG, shot data, and player positions.
- * Understat embeds JSON in script tags which we parse out.
  */
 async function scrapeUnderstatMatch(matchId) {
   const cacheKey = `understat:match:${matchId}`;
@@ -31,13 +83,8 @@ async function scrapeUnderstatMatch(matchId) {
 
   try {
     const url = `https://understat.com/match/${matchId}`;
-    const { data: html } = await axios.get(url, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-      },
-    });
+    const html = await fetchWithRetry(url);
 
-    // Extract JSON data from script tags
     const shotsData = extractJSON(html, 'shotsData');
     const rostersData = extractJSON(html, 'rostersData');
     const matchInfo = extractJSON(html, 'match_info');
@@ -68,14 +115,10 @@ async function scrapeUnderstatLeague(leagueSlug, season) {
 
   try {
     const url = `https://understat.com/league/${leagueSlug}/${season}`;
-    const { data: html } = await axios.get(url, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-      },
-    });
+    const html = await fetchWithRetry(url);
 
     const datesData = extractJSON(html, 'datesData');
-    cache.set(cacheKey, datesData, 1800); // 30 min cache
+    cache.set(cacheKey, datesData, 1800);
     return datesData;
   } catch (err) {
     console.error(`[Understat] Error scraping league ${leagueSlug}:`, err.message);
@@ -119,12 +162,11 @@ function calculateAdvancedStats(shotsData, rostersData) {
   const homeXG = homeShots.reduce((sum, s) => sum + parseFloat(s.xG || 0), 0);
   const awayXG = awayShots.reduce((sum, s) => sum + parseFloat(s.xG || 0), 0);
 
-  // Process shots for shot map
   const processShotForMap = (shot, isHome) => ({
     x: parseFloat(shot.X) * 100,
     y: parseFloat(shot.Y) * 100,
     xG: parseFloat(shot.xG || 0),
-    result: shot.result, // 'Goal', 'SavedShot', 'MissedShots', 'BlockedShot', 'ShotOnPost'
+    result: shot.result,
     isGoal: shot.result === 'Goal',
     onTarget: shot.result === 'Goal' || shot.result === 'SavedShot',
     player: shot.player,
@@ -142,7 +184,6 @@ function calculateAdvancedStats(shotsData, rostersData) {
     awayShotCount: awayShots.length,
     homeOnTarget: homeShots.filter((s) => s.result === 'Goal' || s.result === 'SavedShot').length,
     awayOnTarget: awayShots.filter((s) => s.result === 'Goal' || s.result === 'SavedShot').length,
-    // Player positions from roster data
     homeRoster: rostersData?.h ? Object.values(rostersData.h).map(normalizePlayer) : [],
     awayRoster: rostersData?.a ? Object.values(rostersData.a).map(normalizePlayer) : [],
   };
@@ -185,16 +226,20 @@ router.get('/league/:league', async (req, res) => {
 });
 
 // GET /api/understat/find?home=Arsenal&away=Chelsea&date=2026-03-10&league=pl
-// Finds an Understat match ID by team names and date, then returns stats
 router.get('/find', async (req, res) => {
   try {
     const { home, away, date, league } = req.query;
     const slug = LEAGUE_SLUGS[league];
-    if (!slug) return res.json({ found: false, error: 'League not covered by Understat' });
+    if (!slug) return res.json({ found: false, reason: 'League not covered by Understat (CL/EL not supported)' });
 
     const season = getCurrentSeason();
+    console.log(`[Understat] Finding match: ${home} vs ${away} on ${date} in ${slug} (season ${season})`);
+
     const datesData = await scrapeUnderstatLeague(slug, season);
-    if (!datesData) return res.json({ found: false });
+    if (!datesData) {
+      console.warn(`[Understat] Could not fetch league data for ${slug}`);
+      return res.json({ found: false, reason: 'Could not fetch league data from Understat' });
+    }
 
     // Find match by team names and date
     const targetDate = new Date(date);
@@ -205,10 +250,15 @@ router.get('/find', async (req, res) => {
       const dayDiff = Math.abs(matchDate.getTime() - targetDate.getTime()) / (1000 * 60 * 60 * 24);
 
       if (dayDiff <= 1) {
-        const homeMatch = match.h?.title?.toLowerCase().includes(home?.toLowerCase()) ||
-                          match.h?.short_title?.toLowerCase().includes(home?.toLowerCase()?.substring(0, 3));
-        const awayMatch = match.a?.title?.toLowerCase().includes(away?.toLowerCase()) ||
-                          match.a?.short_title?.toLowerCase().includes(away?.toLowerCase()?.substring(0, 3));
+        const homeLower = home?.toLowerCase() || '';
+        const awayLower = away?.toLowerCase() || '';
+
+        const homeMatch = match.h?.title?.toLowerCase().includes(homeLower) ||
+                          homeLower.includes(match.h?.title?.toLowerCase() || '___') ||
+                          match.h?.short_title?.toLowerCase().includes(homeLower?.substring(0, 3));
+        const awayMatch = match.a?.title?.toLowerCase().includes(awayLower) ||
+                          awayLower.includes(match.a?.title?.toLowerCase() || '___') ||
+                          match.a?.short_title?.toLowerCase().includes(awayLower?.substring(0, 3));
 
         if (homeMatch && awayMatch) {
           foundMatch = match;
@@ -217,14 +267,35 @@ router.get('/find', async (req, res) => {
       }
     }
 
-    if (!foundMatch) return res.json({ found: false });
+    if (!foundMatch) {
+      console.warn(`[Understat] No match found for ${home} vs ${away} on ${date}`);
+      return res.json({ found: false, reason: 'Match not found in Understat data' });
+    }
 
-    // Now scrape the full match data
+    console.log(`[Understat] Found match ID: ${foundMatch.id}`);
     const matchData = await scrapeUnderstatMatch(foundMatch.id);
+    if (!matchData) {
+      return res.json({ found: false, reason: 'Could not scrape match details' });
+    }
+
     res.json({ found: true, understatId: foundMatch.id, ...matchData });
   } catch (err) {
     console.error('[Understat] Find error:', err.message);
-    res.json({ found: false, error: err.message });
+    res.json({ found: false, reason: err.message });
+  }
+});
+
+// GET /api/understat/status — check if Understat is reachable
+router.get('/status', async (req, res) => {
+  try {
+    const { data } = await axios.get('https://understat.com', {
+      headers: getHeaders(),
+      timeout: 10000,
+    });
+    const reachable = data && data.includes('understat');
+    res.json({ reachable, message: reachable ? 'Understat is accessible' : 'Unexpected response from Understat' });
+  } catch (err) {
+    res.json({ reachable: false, message: `Cannot reach Understat: ${err.message}` });
   }
 });
 

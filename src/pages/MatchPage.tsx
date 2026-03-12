@@ -216,7 +216,40 @@ export function MatchPage() {
 
       {!hasUnderstat && isFinished && (
         <div style={{ backgroundColor: '#fffbeb', border: '1px solid #fde68a', borderRadius: 8, padding: mob ? 12 : 16, marginBottom: 28, fontSize: 13, color: '#92400e' }}>
-          <strong>Note:</strong> Advanced stats not available. Understat covers top 5 leagues only.
+          <strong>Note:</strong> Advanced stats (xG, shot maps, position maps) are not available for this match.
+          {understat?.reason && <span> Reason: {understat.reason}</span>}
+          {!understat?.reason && match.league === 'ucl' || match.league === 'uel'
+            ? ' Understat covers top 5 leagues only — CL/EL matches won\'t have advanced stats.'
+            : ' This could be due to Understat being temporarily unavailable or the match not being found in their database.'}
+        </div>
+      )}
+
+      {/* ─── Lineups ─── */}
+      {isFinished && match.home.lineup && match.home.lineup.length > 0 && (
+        <div style={{ marginBottom: 28 }}>
+          <div style={{ fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 1, color: '#6b7280', marginBottom: 10 }}>Lineups</div>
+          <div style={{ display: 'grid', gridTemplateColumns: mob ? '1fr' : '1fr 1fr', gap: 12 }}>
+            <div style={{ backgroundColor: '#fff', border: '1px solid #e5e5e5', borderRadius: 8, padding: mob ? 12 : 16 }}>
+              <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8 }}>{match.home.name} {match.home.formation ? `(${match.home.formation})` : ''}</div>
+              {match.home.coach && <div style={{ fontSize: 12, color: '#6b7280', marginBottom: 8 }}>Coach: {match.home.coach}</div>}
+              {match.home.lineup.map((p: any, i: number) => (
+                <div key={i} style={{ fontSize: 13, padding: '3px 0', display: 'flex', gap: 8 }}>
+                  <span style={{ color: '#9ca3af', fontVariantNumeric: 'tabular-nums', width: 24 }}>{p.shirtNumber}</span>
+                  <span>{p.name}</span>
+                </div>
+              ))}
+            </div>
+            <div style={{ backgroundColor: '#fff', border: '1px solid #e5e5e5', borderRadius: 8, padding: mob ? 12 : 16 }}>
+              <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8 }}>{match.away.name} {match.away.formation ? `(${match.away.formation})` : ''}</div>
+              {match.away.coach && <div style={{ fontSize: 12, color: '#6b7280', marginBottom: 8 }}>Coach: {match.away.coach}</div>}
+              {match.away.lineup?.map((p: any, i: number) => (
+                <div key={i} style={{ fontSize: 13, padding: '3px 0', display: 'flex', gap: 8 }}>
+                  <span style={{ color: '#9ca3af', fontVariantNumeric: 'tabular-nums', width: 24 }}>{p.shirtNumber}</span>
+                  <span>{p.name}</span>
+                </div>
+              ))}
+            </div>
+          </div>
         </div>
       )}
 
